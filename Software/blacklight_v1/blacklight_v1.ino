@@ -1,4 +1,23 @@
-static double blackbody[37][4] = {
+// Blacklight v1
+//
+// An arduino prototype of the blacklight, which
+// responds to human body heat by adjusting the
+// color temperature of a flashlight, from a dim
+// red ember, through a bright white light, up
+// to a very bright blue sky light.
+
+// The structure of the lookup data
+const int MIN_TEMP_K = 1000;
+const int MAX_TEMP_K = 10000;
+const int TEMP_STEP_K = 250;
+const int BLACKBODY_LOOKUP_SIZE = (MAX_TEMP_K - MIN_TEMP_K)/TEMP_STEP_K + 1;
+
+// Converts a temperature to its (full-brightness)
+// RGBW values. These were calculated using a
+// seperate utility I wrote that estimates both the
+// blackbody and LED-spectral CIE values for a given
+// set of PWM brightness values.
+static int blackbody[BLACKBODY_LOOKUP_SIZE][4] = {
 {255, 8, 0, 0},
 {255, 17, 0, 0},
 {255, 28, 0, 0},
@@ -37,29 +56,58 @@ static double blackbody[37][4] = {
 {0, 0, 255, 144}
 };
 
+// The LED PWM pins
+// Actually drives the AMC7135 drivers
 const int RED = 10;
 const int GREEN = 11;
 const int BLUE = 9;
 const int WHITE = 6;
 
+// The termistor pins
 const int THERM_REF = A5;
 const int THERM_HOT = A4;
 
-int sensorValue = 0;        // value read from the pot
+// Moving average weight to smooth
+// the termistor values.
+const float alpha = 0.03;
+
+// State variables for the loop
+int sensorValue = 0;
+float sensor_iit = 0.0;
 int outputValue = 0;        // value output to the PWM (analog out)
 int wait_time = 100;
+double rgbw[4];
 
-/*
-def temp_to_blackbody(temp) {
-    if (nm <= 1000):
-        return CIE_COLOR_MATCH[0]
-    ind = (int(nm) - 380)/5
-    if ind >= len(CIE_COLOR_MATCH) - 1:
-        return CIE_COLOR_MATCH[-1]
-    err = (float(nm) - 380.0)/5.0 - ind
+// Converts temperature into a brightness
+// Note: This isn't purely physical, as
+// blackbody brightness goes as T^4
+// under the Stefan–Boltzmann law
+float temp_to_brightness(float temp) {
+  float lin = min((temp/4000.0), 1.0);
+  return lin*lin*lin;
 }
-*/
 
+// Converts the temperature to an RGBW
+// value. For intermediate temperatures,
+// it interpolates within the lookup table
+void temp_to_rgbw(double * rgbw, float temp) {
+  int ind = 0;
+  int lower[4];
+  int upper[4];
+  temp = max(min(temp, MAX_TEMP_K), MIN_TEMP_K);
+  ind = (int) ((int) temp - MIN_TEMP_K)/TEMP_STEP_K;
+  for (int i = 0; i < 4; i++) {
+    lower[i] = blackbody[ind][i];
+    upper[i] = blackbody[min(ind + 1, BLACKBODY_LOOKUP_SIZE - 1)][i];
+  }
+  float err = (temp - (float) MIN_TEMP_K)/((float) TEMP_STEP_K) - (float) ind;
+  // Interpolate between temperatures
+  for (int i = 0; i < 4; i++) {
+    rgbw[i] = ((1.0 - err)*lower[i] + err*upper[i])*temp_to_brightness(temp);
+  }
+}
+
+// Turn off the LED's
 void setup() {
   // put your setup code here, to run once:
   analogWrite(RED, 0);
@@ -70,36 +118,19 @@ void setup() {
 }
 
 void loop() {
+  // Measure the difference between the hot and reference
+  // thermistor. By making it differential, we allow the
+  // device to work in various ambient temperatures
   sensorValue = min(max(analogRead(THERM_HOT) - analogRead(THERM_REF), 0), 35);
-  analogWrite(RED, blackbody[sensorValue][0]);
-  analogWrite(GREEN, blackbody[sensorValue][1]);
-  analogWrite(BLUE, blackbody[sensorValue][2]);
-  analogWrite(WHITE, blackbody[sensorValue][3]);
+  // Smooth the value
+  sensor_iit = alpha*sensorValue + (1.0 - alpha)*sensor_iit;
+  Serial.println(sensor_iit*250.0);
+  // Convert the smoothed "temperature" to
+  // an rgbw value
+  temp_to_rgbw(rgbw, sensor_iit*250.0);
+  analogWrite(RED, rgbw[0]);
+  analogWrite(GREEN, rgbw[1]);
+  analogWrite(BLUE, rgbw[2]);
+  analogWrite(WHITE, rgbw[3]);
   delay(200);
-  /*
-  sensorValue = max((analogRead(THERM_HOT) - analogRead(THERM_REF) - 3)*40, 3);
-  Serial.println(sensorValue);
-  outputValue = map(sensorValue, 0, 1023, 0, 255);
-  analogWrite(WHITE, 0);
-  analogWrite(RED, outputValue);
-  delay(wait_time);
-  analogWrite(RED, 0);
-  analogWrite(GREEN, outputValue);
-  delay(wait_time);
-  analogWrite(GREEN, 0);
-  analogWrite(BLUE, outputValue);
-  delay(wait_time);
-  analogWrite(BLUE, 0);
-  analogWrite(WHITE, outputValue);
-  delay(wait_time);
-  analogWrite(RED, outputValue);
-  analogWrite(GREEN, outputValue);
-  analogWrite(BLUE, outputValue);
-  analogWrite(WHITE, outputValue);
-  delay(wait_time);
-  analogWrite(RED, 0);
-  analogWrite(GREEN, 0);
-  analogWrite(BLUE, 0);
-  analogWrite(WHITE, 0);
-  */
 }
